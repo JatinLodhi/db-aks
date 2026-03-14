@@ -1,0 +1,54 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web-app-pdb
+  namespace: production
+spec:
+  minAvailable: 70%  # Always keep at least 70% of pods running
+  selector:
+    matchLabels:
+      app: web-app
+      tier: frontend
+  # Alternative: Use maxUnavailable instead
+  # maxUnavailable: 30%
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-service-pdb
+  namespace: production
+spec:
+  minAvailable: 75%  # More conservative for API services
+  selector:
+    matchLabels:
+      app: api-service
+      tier: backend
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: database-pdb
+  namespace: production
+spec:
+  minAvailable: 2  # For stateful sets, use absolute numbers
+  selector:
+    matchLabels:
+      app: database
+      tier: data
+
+---
+# PDB for critical services - very conservative
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: auth-service-pdb
+  namespace: production
+spec:
+  minAvailable: 90%  # Keep 90% running during disruptions
+  selector:
+    matchLabels:
+      app: auth-service
+      tier: backend
+      criticality: high

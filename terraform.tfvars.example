@@ -1,0 +1,109 @@
+# terraform.tfvars.example
+# Copy this file to terraform.tfvars and customize for your environment
+# This configuration is optimized for 100k concurrent users / 500k total users
+
+# Basic Configuration
+resource_group_name = "aks-production-rg"
+location            = "eastus"  # Choose region closest to your users
+cluster_name        = "aks-prod-cluster"
+environment         = "production"
+kubernetes_version  = "1.28"  # Update to latest stable version
+
+# SKU Tier - Use Premium for production SLA
+sku_tier = "Standard"  # Change to "Premium" for 99.95% uptime SLA
+
+# Network Configuration
+# Large address spaces to accommodate high pod density
+vnet_address_space          = "10.0.0.0/8"
+aks_subnet_address_prefix   = "10.240.0.0/12"  # Supports ~1M IPs
+appgw_subnet_address_prefix = "10.1.0.0/24"
+service_cidr                = "10.2.0.0/16"
+dns_service_ip              = "10.2.0.10"
+
+# System Node Pool (for Kubernetes system components)
+system_node_vm_size  = "Standard_D4s_v5"  # 4 vCPUs, 16GB RAM
+system_node_count    = 3
+system_node_min_count = 3
+system_node_max_count = 6
+
+# User Node Pool Configuration
+# For 100k concurrent users, recommended configuration:
+# - Standard_D8s_v5: 8 vCPUs, 32GB RAM
+# - Estimated 500-700 users per node (depends on app resource usage)
+# - 2 node pools × 150 max nodes = 300 total nodes = 150k-210k user capacity
+
+user_node_vm_size        = "Standard_D8s_v5"
+user_node_initial_count  = 30   # Start with ~15k-20k user capacity
+user_node_min_count      = 20   # Minimum ~10k-14k user capacity
+user_node_max_count      = 150  # Maximum ~75k-105k per pool
+
+# Alternative VM sizes based on workload:
+# Standard_D4s_v5  (4 vCPUs, 16GB)  - Lower cost, ~250-350 users/node
+# Standard_D16s_v5 (16 vCPUs, 64GB) - Higher capacity, ~1000-1400 users/node
+# Standard_D32s_v5 (32 vCPUs, 128GB) - Maximum capacity, ~2000-2800 users/node
+
+# High Performance Pool (for critical/latency-sensitive workloads)
+enable_high_perf_pool  = true
+high_perf_node_vm_size = "Standard_D16s_v5"
+
+# Pod Configuration
+max_pods_per_node = 110  # Azure CNI max is 250, but 110 provides better stability
+
+# Availability Zones
+availability_zones = ["1", "2", "3"]
+
+# Networking - Multiple outbound IPs to avoid SNAT exhaustion
+outbound_ip_count = 4  # Increase if experiencing connection issues
+
+# Security Configuration
+# IMPORTANT: Restrict API server access in production!
+api_server_authorized_ip_ranges = [
+  # "1.2.3.4/32",  # Your office IP
+  # "5.6.7.8/32",  # CI/CD pipeline IP
+]
+
+# Azure AD Admin Groups (add your group object IDs)
+admin_group_object_ids = [
+  # "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",  # Platform Team
+  # "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",  # DevOps Team
+]
+
+# Monitoring
+log_retention_days = 30  # Increase for compliance requirements
+
+# Application Gateway (for advanced routing and WAF)
+enable_app_gateway = false  # Set to true if you need Layer 7 features
+
+# Container Registry
+create_acr                    = true
+acr_geo_replication_location = "westus"  # Choose a secondary region
+
+# Tags
+tags = {
+  Environment  = "Production"
+  ManagedBy    = "Terraform"
+  Purpose      = "High-Scale-AKS"
+  CostCenter   = "Engineering"
+  Owner        = "Platform-Team"
+  Project      = "Main-Application"
+  Criticality  = "High"
+  DR-Required  = "Yes"
+}
+
+# Cost Optimization Notes:
+# ------------------------
+# 1. Start with smaller min_count and let autoscaler handle growth
+# 2. Use Spot VMs for non-critical workloads (add separate node pool)
+# 3. Enable cluster autoscaler to scale down during off-peak
+# 4. Monitor and adjust max_pods_per_node based on actual usage
+# 5. Consider reserved instances for baseline capacity (40-60% savings)
+
+# Performance Tuning Notes:
+# -------------------------
+# 1. Azure CNI provides better network performance than kubenet
+# 2. Premium SSD for system node pool for faster pod startup
+# 3. Enable Azure Monitor Container Insights for observability
+# 4. Configure HPA (Horizontal Pod Autoscaler) for your apps
+# 5. Use PodDisruptionBudgets to maintain availability during updates
+# 6. Implement resource requests/limits on all pods
+# 7. Use node affinity/anti-affinity for critical workloads

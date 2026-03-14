@@ -1,0 +1,333 @@
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - '*.tf'
+      - 'azure-pipelines.yml'
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - '*.tf'
+
+variables:
+  - group: terraform-credentials
+  - name: terraformVersion
+    value: '1.6.0'
+  - name: workingDirectory
+    value: '$(System.DefaultWorkingDirectory)'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  - stage: Validate
+    displayName: 'Validate Terraform'
+    jobs:
+      - job: Validate
+        displayName: 'Validate Configuration'
+        steps:
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Init'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                terraform init \
+                  -backend-config="resource_group_name=$(tfStateResourceGroup)" \
+                  -backend-config="storage_account_name=$(tfStateStorageAccount)" \
+                  -backend-config="container_name=$(tfStateContainer)" \
+                  -backend-config="key=$(tfStateKey)"
+
+          - task: Bash@3
+            displayName: 'Terraform Format Check'
+            inputs:
+              targetType: 'inline'
+              script: 'terraform fmt -check'
+              workingDirectory: $(workingDirectory)
+            continueOnError: true
+
+          - task: Bash@3
+            displayName: 'Terraform Validate'
+            inputs:
+              targetType: 'inline'
+              script: 'terraform validate'
+              workingDirectory: $(workingDirectory)
+
+  - stage: Plan
+    displayName: 'Terraform Plan'
+    dependsOn: Validate
+    jobs:
+      - job: Plan
+        displayName: 'Create Terraform Plan'
+        steps:
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Init'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                terraform init \
+                  -backend-config="resource_group_name=$(tfStateResourceGroup)" \
+                  -backend-config="storage_account_name=$(tfStateStorageAccount)" \
+                  -backend-config="container_name=$(tfStateContainer)" \
+                  -backend-config="key=$(tfStateKey)"
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Plan'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                terraform plan -out=tfplan
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Plan Artifact'
+            inputs:
+              targetPath: '$(workingDirectory)/tfplan'
+              artifact: 'tfplan'
+              publishLocation: 'pipeline'
+
+  - stage: SecurityScan
+    displayName: 'Security Scanning'
+    dependsOn: Validate
+    jobs:
+      - job: Checkov
+        displayName: 'Run Checkov Security Scan'
+        steps:
+          - task: Bash@3
+            displayName: 'Install Checkov'
+            inputs:
+              targetType: 'inline'
+              script: |
+                pip3 install checkov
+
+          - task: Bash@3
+            displayName: 'Run Checkov'
+            inputs:
+              targetType: 'inline'
+              script: |
+                checkov -d . --framework terraform --output junitxml > checkov-report.xml
+            continueOnError: true
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Checkov Results'
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/checkov-report.xml'
+              failTaskOnFailedTests: false
+
+      - job: TFSec
+        displayName: 'Run TFSec Security Scan'
+        steps:
+          - task: Bash@3
+            displayName: 'Install TFSec'
+            inputs:
+              targetType: 'inline'
+              script: |
+                curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+
+          - task: Bash@3
+            displayName: 'Run TFSec'
+            inputs:
+              targetType: 'inline'
+              script: |
+                tfsec . --format junit > tfsec-report.xml
+            continueOnError: true
+
+          - task: PublishTestResults@2
+            displayName: 'Publish TFSec Results'
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/tfsec-report.xml'
+              failTaskOnFailedTests: false
+
+  - stage: CostEstimate
+    displayName: 'Cost Estimation'
+    dependsOn: Validate
+    jobs:
+      - job: Infracost
+        displayName: 'Generate Cost Estimate'
+        steps:
+          - task: Bash@3
+            displayName: 'Install Infracost'
+            inputs:
+              targetType: 'inline'
+              script: |
+                curl -fsSL https://raw.githubusercontent.com/infracost/infracost/master/scripts/install.sh | sh
+
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Init'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: 'terraform init'
+
+          - task: Bash@3
+            displayName: 'Generate Cost Estimate'
+            inputs:
+              targetType: 'inline'
+              script: |
+                infracost breakdown --path . --format json --out-file infracost.json
+                infracost output --path infracost.json --format table
+            env:
+              INFRACOST_API_KEY: $(INFRACOST_API_KEY)
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Cost Estimate'
+            inputs:
+              targetPath: 'infracost.json'
+              artifact: 'cost-estimate'
+
+  - stage: Apply
+    displayName: 'Terraform Apply'
+    dependsOn:
+      - Plan
+      - SecurityScan
+      - CostEstimate
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: Apply
+        displayName: 'Apply Terraform Changes'
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: TerraformInstaller@1
+                  displayName: 'Install Terraform'
+                  inputs:
+                    terraformVersion: $(terraformVersion)
+
+                - task: DownloadPipelineArtifact@2
+                  displayName: 'Download Plan Artifact'
+                  inputs:
+                    artifact: 'tfplan'
+                    path: $(workingDirectory)
+
+                - task: AzureCLI@2
+                  displayName: 'Terraform Init'
+                  inputs:
+                    azureSubscription: 'Azure-Service-Connection'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      terraform init \
+                        -backend-config="resource_group_name=$(tfStateResourceGroup)" \
+                        -backend-config="storage_account_name=$(tfStateStorageAccount)" \
+                        -backend-config="container_name=$(tfStateContainer)" \
+                        -backend-config="key=$(tfStateKey)"
+
+                - task: AzureCLI@2
+                  displayName: 'Terraform Apply'
+                  inputs:
+                    azureSubscription: 'Azure-Service-Connection'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      terraform apply -auto-approve tfplan
+                  env:
+                    ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+                    ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+                    ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+                    ARM_TENANT_ID: $(ARM_TENANT_ID)
+
+                - task: Bash@3
+                  displayName: 'Get Cluster Info'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      CLUSTER_NAME=$(terraform output -raw cluster_name)
+                      RESOURCE_GROUP=$(terraform output -raw resource_group_name)
+                      echo "##vso[task.setvariable variable=clusterName;isOutput=true]$CLUSTER_NAME"
+                      echo "##vso[task.setvariable variable=resourceGroup;isOutput=true]$RESOURCE_GROUP"
+                      echo "Cluster deployed: $CLUSTER_NAME in $RESOURCE_GROUP"
+
+                - task: Bash@3
+                  displayName: 'Send Notification'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      # Send to Slack, Teams, or email
+                      curl -X POST $(SLACK_WEBHOOK_URL) \
+                        -H 'Content-Type: application/json' \
+                        -d '{
+                          "text": "AKS Infrastructure Deployment Complete",
+                          "attachments": [{
+                            "color": "good",
+                            "fields": [
+                              {"title": "Cluster", "value": "$(clusterName)", "short": true},
+                              {"title": "Resource Group", "value": "$(resourceGroup)", "short": true},
+                              {"title": "Status", "value": "Deployed", "short": true}
+                            ]
+                          }]
+                        }'
+                  continueOnError: true
+
+  - stage: PostDeploy
+    displayName: 'Post-Deployment Verification'
+    dependsOn: Apply
+    jobs:
+      - job: Verify
+        displayName: 'Verify Deployment'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Get AKS Credentials'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                CLUSTER_NAME=$(terraform output -raw cluster_name)
+                RESOURCE_GROUP=$(terraform output -raw resource_group_name)
+                az aks get-credentials --resource-group $RESOURCE_GROUP --name $CLUSTER_NAME
+
+          - task: Bash@3
+            displayName: 'Verify Cluster Nodes'
+            inputs:
+              targetType: 'inline'
+              script: |
+                kubectl get nodes
+                kubectl get pods -A
+
+          - task: Bash@3
+            displayName: 'Check Cluster Health'
+            inputs:
+              targetType: 'inline'
+              script: |
+                # Check node status
+                kubectl get nodes -o json | jq '.items[] | select(.status.conditions[] | select(.type=="Ready" and .status!="True")) | .metadata.name'
+                
+                # Check for failed pods
+                kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded
