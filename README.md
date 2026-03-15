@@ -1,27 +1,72 @@
-# High-Scale AKS Cluster - Terraform Configuration
+# AKS Terraform Infrastructure
 
-Production-grade Azure Kubernetes Service (AKS) cluster designed to handle **~500,000 total users** and **~100,000 concurrent users**.
+Production-grade Azure Kubernetes Service (AKS) cluster with modular Terraform architecture, optimized for frontend and backend applications.
 
 ## 📋 Architecture Overview
 
 ### Cluster Design
 - **Multi-zone deployment** across 3 availability zones for high availability
-- **4 node pools**:
+- **3 node pools**:
   - **System Pool**: Dedicated for Kubernetes system components (3-6 nodes)
-  - **User Pool 1**: Primary workload pool (20-150 nodes)
-  - **User Pool 2**: Additional scaling capacity (20-150 nodes)
-  - **High-Performance Pool**: For critical/latency-sensitive workloads (3-20 nodes)
-- **Total capacity**: Up to 326 nodes (300 user + 6 system + 20 high-perf)
-- **Estimated max concurrent users**: 150,000-210,000 (with safety margin)
+  - **Frontend Pool**: Optimized for web/frontend workloads (3-20 nodes)
+  - **Backend Pool**: Optimized for API/backend workloads (3-20 nodes)
+- **Auto-scaling**: Cluster autoscaler with fine-tuned scaling profiles
+- **Modular structure**: Organized into reusable Terraform modules
 
 ### Key Features
 ✅ **Auto-scaling**: Cluster autoscaler with fine-tuned scaling profiles  
-✅ **High availability**: Multi-zone deployment, multiple node pools  
+✅ **High availability**: Multi-zone deployment, dedicated node pools  
 ✅ **Network performance**: Azure CNI for optimal pod networking  
-✅ **Security**: Network policies, Azure AD RBAC, private endpoints (optional)  
+✅ **Security**: Network policies, Azure AD RBAC, role-based access  
 ✅ **Monitoring**: Azure Monitor Container Insights, Log Analytics  
 ✅ **Container registry**: Premium ACR with geo-replication  
 ✅ **Load balancing**: Standard Load Balancer with multiple outbound IPs  
+✅ **CI/CD Ready**: GitHub Actions workflow included
+
+## 📁 Repository Structure
+
+```
+db-aks/
+├── .github/
+│   └── workflows/
+│       └── terraform.yml          # GitHub Actions CI/CD pipeline
+├── docs/                          # Documentation
+│   ├── FRONTEND-BACKEND-ARCHITECTURE.md
+│   ├── GITHUB-ACTIONS-SETUP.md
+│   ├── MODULE-STRUCTURE.md
+│   ├── PROJECT-SUMMARY.md
+│   ├── QUICK-REFERENCE.md
+│   └── TROUBLESHOOTING.md
+├── environments/                  # Environment-specific configs
+│   ├── development.tfvars
+│   ├── main.tfvars
+│   ├── backend-development.tfvars
+│   └── backend-main.tfvars
+├── examples/                      # Kubernetes example manifests
+│   ├── deployment-example.yaml
+│   ├── hpa-examples.yaml
+│   └── pdb-examples.yaml
+├── modules/                       # Terraform modules
+│   ├── aks-cluster/
+│   ├── container-registry/
+│   ├── identity/
+│   ├── monitoring/
+│   ├── networking/
+│   ├── node-pools/
+│   └── resource-group/
+├── scripts/                       # Utility scripts
+│   ├── cost-calculator.sh
+│   ├── deploy.sh
+│   ├── load-test.js
+│   ├── Makefile
+│   └── monitoring-alerts.sh
+├── backend.tf                     # Backend configuration
+├── main.tf                        # Root module
+├── outputs.tf                     # Root outputs
+├── variables.tf                   # Root variables
+├── terraform.tfvars.example       # Example configuration
+└── README.md                      # This file
+```
 
 ## 🚀 Quick Start
 
@@ -37,72 +82,103 @@ az login
 az account set --subscription "<your-subscription-id>"
 ```
 
-### Deployment Steps
+### Local Deployment
 
 1. **Clone and configure**
 ```bash
-cd aks-terraform
+cd db-aks
 cp terraform.tfvars.example terraform.tfvars
 # Edit terraform.tfvars with your values
 ```
 
 2. **Initialize Terraform**
 ```bash
-terraform init
-```
+## 🚀 Deployment Options
 
-3. **Review the plan**
+### Option 1: GitHub Actions (Recommended)
+
+This repository includes a complete CI/CD pipeline with GitHub Actions.
+
+**Setup Steps**:
+1. Configure Azure service principal and GitHub secrets
+2. Push to `main` or `development` branch
+3. Review and approve the Terraform plan
+4. Automated deployment to Azure
+
+See [docs/GITHUB-ACTIONS-SETUP.md](docs/GITHUB-ACTIONS-SETUP.md) for complete setup instructions.
+
+### Option 2: Local Deployment
+
+For local testing or manual deployments:
+
 ```bash
-terraform plan -out=tfplan
+# Initialize with environment-specific configuration
+terraform init \
+  -var-file=environments/development.tfvars \
+  -backend-config=environments/backend-development.tfvars
+
+# Plan changes
+terraform plan -var-file=environments/development.tfvars
+
+# Apply changes
+terraform apply -var-file=environments/development.tfvars
 ```
 
-4. **Deploy the cluster**
-```bash
-terraform apply tfplan
-```
+### Deployment Time
 
-Deployment typically takes **15-25 minutes**.
+Typical deployment takes **15-25 minutes** for a new cluster.
 
-5. **Get cluster credentials**
+### Post-Deployment
+
+Get cluster credentials:
 ```bash
 az aks get-credentials \
   --resource-group $(terraform output -raw resource_group_name) \
   --name $(terraform output -raw cluster_name)
 ```
 
-6. **Verify deployment**
+Verify deployment:
 ```bash
-kubectl get nodes
+kubectl get nodes -L workload,app-tier
 kubectl get pods -A
 ```
 
 ## ⚙️ Configuration
 
-### Capacity Planning
+### Node Pool Architecture
 
-**User Node Pool Sizing (per pool)**:
-| VM Size | vCPU | RAM | Est. Users/Node | Min Nodes | Max Nodes | Max Users |
-|---------|------|-----|-----------------|-----------|-----------|-----------|
-| D4s_v5  | 4    | 16GB | 250-350        | 20        | 150       | 37.5k-52.5k |
-| D8s_v5  | 8    | 32GB | 500-700        | 20        | 150       | 75k-105k |
-| D16s_v5 | 16   | 64GB | 1000-1400      | 20        | 150       | 150k-210k |
+The cluster uses dedicated node pools for frontend and backend workloads:
 
-**Total Capacity (with 2 user pools)**:
-- **D8s_v5** (default): 150k-210k concurrent users
-- **D16s_v5**: 300k-420k concurrent users
+**Frontend Node Pool**:
+- **VM Size**: Standard_D4s_v5 (4 vCPUs, 16GB RAM)
+- **Scaling**: 3-20 nodes
+- **Purpose**: Web servers, SPAs, frontend applications
+- **Node Labels**: `workload=frontend`, `app-tier=presentation`
+
+**Backend Node Pool**:
+- **VM Size**: Standard_D4s_v5 (4 vCPUs, 16GB RAM)
+- **Scaling**: 3-20 nodes
+- **Purpose**: APIs, business logic, backend services
+- **Node Labels**: `workload=backend`, `app-tier=application`
+
+See [docs/FRONTEND-BACKEND-ARCHITECTURE.md](docs/FRONTEND-BACKEND-ARCHITECTURE.md) for detailed information.
 
 ### Key Variables to Customize
 
 ```hcl
-# In terraform.tfvars
+# In terraform.tfvars or environments/*.tfvars
 
-# Adjust VM size based on your workload
-user_node_vm_size = "Standard_D8s_v5"
+# Frontend Configuration
+frontend_node_vm_size       = "Standard_D4s_v5"
+frontend_node_initial_count = 3
+frontend_node_min_count     = 3
+frontend_node_max_count     = 20
 
-# Adjust node counts based on expected traffic
-user_node_initial_count = 30  # Start capacity
-user_node_min_count     = 20  # Minimum always running
-user_node_max_count     = 150 # Maximum scale-out
+# Backend Configuration
+backend_node_vm_size        = "Standard_D4s_v5"
+backend_node_initial_count  = 3
+backend_node_min_count      = 3
+backend_node_max_count      = 20
 
 # Security: Restrict API server access
 api_server_authorized_ip_ranges = ["1.2.3.4/32"]
@@ -162,62 +238,77 @@ az aks show --resource-group <rg> --name <cluster> --query id
 
 ## 🔄 Post-Deployment Configuration
 
-### 1. Deploy Horizontal Pod Autoscaler (HPA)
+### 1. Deploy Your Applications
+
+Deploy frontend applications to frontend nodes:
 ```yaml
-# hpa-example.yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
+# See examples/deployment-example.yaml
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: app-hpa
+  name: frontend-app
 spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: your-app
-  minReplicas: 10
-  maxReplicas: 500
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 70
-  - type: Resource
-    resource:
-      name: memory
-      target:
-        type: Utilization
-        averageUtilization: 80
+  replicas: 3
+  template:
+    spec:
+      nodeSelector:
+        workload: frontend
+        app-tier: presentation
+      containers:
+      - name: frontend
+        image: your-frontend-image:latest
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
 ```
 
-### 2. Configure Pod Disruption Budgets
+Deploy backend applications to backend nodes:
 ```yaml
-# pdb-example.yaml
-apiVersion: policy/v1
-kind: PodDisruptionBudget
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: app-pdb
+  name: backend-app
 spec:
-  minAvailable: 70%
-  selector:
-    matchLabels:
-      app: your-app
+  replicas: 5
+  template:
+    spec:
+      nodeSelector:
+        workload: backend
+        app-tier: application
+      containers:
+      - name: backend
+        image: your-backend-image:latest
+        resources:
+          requests:
+            cpu: "1000m"
+            memory: "2Gi"
+          limits:
+            cpu: "2000m"
+            memory: "4Gi"
 ```
 
-### 3. Set Resource Requests/Limits
-```yaml
-# deployment-example.yaml
-resources:
-  requests:
-    cpu: 100m
-    memory: 128Mi
-  limits:
-    cpu: 500m
-    memory: 512Mi
+### 2. Configure Horizontal Pod Autoscaler (HPA)
+
+See [examples/hpa-examples.yaml](examples/hpa-examples.yaml) for complete examples.
+
+```bash
+kubectl apply -f examples/hpa-examples.yaml
+```
+
+### 3. Configure Pod Disruption Budgets (PDB)
+
+See [examples/pdb-examples.yaml](examples/pdb-examples.yaml) for complete examples.
+
+```bash
+kubectl apply -f examples/pdb-examples.yaml
 ```
 
 ### 4. Deploy Ingress Controller
+
 ```bash
 # NGINX Ingress Controller
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
@@ -225,164 +316,194 @@ helm install ingress-nginx ingress-nginx/ingress-nginx \
   --namespace ingress-nginx \
   --create-namespace \
   --set controller.replicaCount=3 \
+  --set controller.nodeSelector."workload"=frontend \
   --set controller.resources.requests.cpu=100m \
   --set controller.resources.requests.memory=128Mi
-```
-
-### 5. Configure Cluster Autoscaler Priorities
-```bash
-# Node pool with higher priority gets scaled first
-kubectl annotate nodepool user_pool_1 \
-  cluster-autoscaler.kubernetes.io/priority=100
-
-kubectl annotate nodepool user_pool_2 \
-  cluster-autoscaler.kubernetes.io/priority=90
 ```
 
 ## 💰 Cost Optimization
 
 ### Estimated Monthly Costs (East US region)
+
 | Component | Configuration | Est. Monthly Cost |
 |-----------|---------------|------------------|
 | System Pool | 3x D4s_v5 | ~$350 |
-| User Pool 1 (min) | 20x D8s_v5 | ~$4,600 |
-| User Pool 2 (min) | 20x D8s_v5 | ~$4,600 |
-| High-Perf Pool | 3x D16s_v5 | ~$1,050 |
+| Frontend Pool (min) | 3x D4s_v5 | ~$525 |
+| Backend Pool (min) | 3x D4s_v5 | ~$525 |
 | ACR Premium | Geo-replicated | ~$250 |
 | Log Analytics | 30-day retention | ~$200-500 |
-| **Total (minimum)** | | **~$11,000-11,500** |
-| **Total (at max scale)** | 326 nodes | **~$75,000** |
+| **Total (minimum)** | | **~$1,850-2,350** |
+| **Total (at max scale)** | 46 nodes | **~$8,000-9,000** |
 
 ### Cost Reduction Strategies
-1. **Use Spot VMs** for non-critical workloads (60-80% savings)
-2. **Reserved Instances** for baseline capacity (40-60% savings)
-3. **Right-size VMs** based on actual usage patterns
-4. **Implement aggressive autoscaling** to scale down during off-peak
-5. **Use smaller VM SKUs** if workload allows (D4s_v5 instead of D8s_v5)
 
-### Add Spot Node Pool (Example)
-```hcl
-# Add to main.tf
-resource "azurerm_kubernetes_cluster_node_pool" "spot" {
-  name                  = "spot"
-  kubernetes_cluster_id = azurerm_kubernetes_cluster.aks.id
-  vm_size              = "Standard_D8s_v5"
-  priority             = "Spot"
-  eviction_policy      = "Delete"
-  spot_max_price       = -1  # Pay up to on-demand price
-  enable_auto_scaling  = true
-  min_count            = 5
-  max_count            = 100
-  
-  node_labels = {
-    "kubernetes.azure.com/scalesetpriority" = "spot"
-  }
-  
-  node_taints = [
-    "kubernetes.azure.com/scalesetpriority=spot:NoSchedule"
-  ]
-}
+1. **Right-size Node Pools** based on actual usage patterns
+2. **Use Reserved Instances** for baseline capacity (up to 60% savings)
+3. **Implement Aggressive Autoscaling** to scale down during off-peak hours
+4. **Use Spot VMs** for non-critical workloads (up to 80% savings)
+5. **Optimize Log Retention** - reduce to 7-14 days if logs are exported
+6. **Use Cheaper Regions** if latency allows
+
+### Cost Monitoring
+
+Use the cost calculator script:
+```bash
+./scripts/cost-calculator.sh
 ```
+
+Monitor costs in Azure Portal or use Azure Cost Management.
 
 ## 🔧 Troubleshooting
 
-### Common Issues
+See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for comprehensive troubleshooting guide.
 
-**1. SNAT Port Exhaustion (High Concurrency)**
+### Quick Diagnostics
+
+**Check node status:**
 ```bash
-# Symptom: Intermittent connection failures
-# Solution: Already configured with 4 outbound IPs
-# Monitor: Check Azure Monitor for SNAT metrics
+kubectl get nodes -L workload,app-tier
+kubectl describe node <node-name>
 ```
 
-**2. Cluster Autoscaler Not Scaling**
+**Check pod issues:**
 ```bash
-# Check autoscaler logs
-kubectl logs -n kube-system -l app=cluster-autoscaler
-
-# Common causes:
-# - Insufficient quota
-# - Max node count reached
-# - Pending pods don't have resource requests
-```
-
-**3. Pod Scheduling Failures**
-```bash
-# Check events
 kubectl get events --sort-by='.lastTimestamp'
-
-# Check node capacity
-kubectl describe nodes | grep -A 5 "Allocated resources"
+kubectl get pods -A | grep -v Running
+kubectl describe pod <pod-name> -n <namespace>
 ```
 
-**4. High Memory/CPU Usage**
+**Check resource usage:**
 ```bash
-# Top resource-consuming pods
+kubectl top nodes
 kubectl top pods -A --sort-by=memory
 kubectl top pods -A --sort-by=cpu
-
-# Top resource-consuming nodes
-kubectl top nodes
 ```
 
-## 📚 Additional Resources
+**Check cluster autoscaler:**
+```bash
+kubectl logs -n kube-system -l app=cluster-autoscaler
+```
 
-### Application Optimization for Scale
-1. **Implement caching** (Redis, Memcached)
-2. **Use CDN** for static assets
-3. **Database connection pooling**
-4. **Async processing** for heavy tasks
-5. **Rate limiting** to prevent abuse
-6. **Session management** (Redis for distributed sessions)
+### Common Issues
 
-### Recommended Kubernetes Add-ons
-- **Prometheus + Grafana**: Advanced monitoring
-- **Cert-Manager**: Automated SSL/TLS certificates
-- **External-DNS**: Automated DNS management
-- **Keda**: Event-driven autoscaling
-- **Istio/Linkerd**: Service mesh for advanced traffic management
+1. **Pods not scheduling on specific node pool**
+   - Verify node labels: `kubectl get nodes --show-labels`
+   - Check nodeSelector in deployment manifest
+   - Ensure nodes are Ready
+
+2. **Autoscaler not scaling**
+   - Check pod resource requests are set
+   - Verify max node count not reached
+   - Check autoscaler logs for errors
+
+3. **High memory/CPU usage**
+   - Review resource requests/limits
+   - Check for memory leaks
+   - Consider scaling up VM size
+
+## 📚 Documentation
+
+- [Frontend/Backend Architecture](docs/FRONTEND-BACKEND-ARCHITECTURE.md)
+- [Module Structure](docs/MODULE-STRUCTURE.md)
+- [GitHub Actions Setup](docs/GITHUB-ACTIONS-SETUP.md)
+- [Quick Reference Guide](docs/QUICK-REFERENCE.md)
+- [Project Summary](docs/PROJECT-SUMMARY.md)
+- [Troubleshooting Guide](docs/TROUBLESHOOTING.md)
+
+## 🛠️ Utilities
+
+### Scripts
+
+Located in the `scripts/` directory:
+
+- **cost-calculator.sh** - Calculate estimated monthly costs
+- **deploy.sh** - Automated deployment script
+- **monitoring-alerts.sh** - Set up monitoring alerts
+- **load-test.js** - Load testing script (k6)
+- **Makefile** - Common commands and workflows
+
+### Kubernetes Examples
+
+Located in the `examples/` directory:
+
+- **deployment-example.yaml** - Sample deployment manifests
+- **hpa-examples.yaml** - Horizontal Pod Autoscaler configurations
+- **pdb-examples.yaml** - Pod Disruption Budget examples
 
 ### Performance Testing
-```bash
-# Load testing with k6
-k6 run --vus 10000 --duration 30m load-test.js
 
-# Monitor during test
+Run load tests using the provided script:
+```bash
+# Install k6 first: https://k6.io/docs/getting-started/installation/
+k6 run scripts/load-test.js
+```
+
+Monitor during test:
+```bash
 watch -n 1 kubectl top nodes
-watch -n 1 kubectl top pods
+watch -n 1 kubectl get hpa
 ```
 
 ## 🔄 Upgrades & Maintenance
 
 ### Kubernetes Version Upgrades
-```bash
-# Check available versions
-az aks get-upgrades --resource-group <rg> --name <cluster>
 
-# Upgrade cluster (use Terraform)
-# Update kubernetes_version in variables.tf
-terraform plan
-terraform apply
+Update the Kubernetes version in your environment tfvars:
+
+```hcl
+# In environments/main.tfvars
+kubernetes_version = "1.29"  # Updated version
 ```
 
-### Node Pool Upgrades
+Then apply via Terraform or GitHub Actions:
 ```bash
-# Upgrade is automatic during cluster upgrade
-# Or manually trigger
-az aks nodepool upgrade \
-  --resource-group <rg> \
-  --cluster-name <cluster> \
-  --name userpool1 \
-  --kubernetes-version 1.28
+terraform plan -var-file=environments/main.tfvars
+terraform apply -var-file=environments/main.tfvars
 ```
 
-## 📞 Support & Contributions
+### Check Available Versions
 
-For issues or questions:
-1. Check Azure AKS documentation
-2. Review Terraform AzureRM provider docs
-3. Check cluster events and logs
-4. Contact your Azure support team
+```bash
+az aks get-upgrades \
+  --resource-group <resource-group> \
+  --name <cluster-name>
+```
+
+### Maintenance Windows
+
+Cluster maintenance is configured to run:
+- **Day**: Sunday
+- **Time**: 2-5 AM UTC
+
+Configure in [modules/aks-cluster/main.tf](modules/aks-cluster/main.tf)
+
+## 🧹 Cleanup
+
+### Destroy Infrastructure
+
+```bash
+# Via Terraform
+terraform destroy -var-file=environments/development.tfvars
+
+# Or for specific environment
+terraform destroy -var-file=environments/main.tfvars
+```
+
+### Remove Backend State
+
+If destroying everything:
+```bash
+# Delete the storage account (after destroying infrastructure)
+az group delete --name terraform-state-rg
+```
+
+## 📞 Support
+
+For questions or issues:
+- Review [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+- Check [docs/QUICK-REFERENCE.md](docs/QUICK-REFERENCE.md)
+- Review Azure AKS documentation
+- Check GitHub Issues for this repository
 
 ## 📄 License
 
@@ -390,14 +511,30 @@ This Terraform configuration is provided as-is for infrastructure deployment.
 
 ---
 
-**Deployment Checklist:**
-- [ ] Updated terraform.tfvars with your values
-- [ ] Configured Azure AD admin groups
-- [ ] Set API server authorized IP ranges
-- [ ] Reviewed and adjusted node pool sizes
-- [ ] Planned for cost monitoring and budgets
-- [ ] Prepared application deployment manifests
-- [ ] Set up monitoring alerts
-- [ ] Documented runbooks for incidents
-- [ ] Tested disaster recovery procedures
-- [ ] Scheduled regular security reviews
+## ✅ Deployment Checklist
+
+Before deploying to production:
+
+- [ ] Review and customize `environments/main.tfvars`
+- [ ] Configure Azure backend storage for Terraform state
+- [ ] Set up GitHub Actions secrets and variables
+- [ ] Configure Azure AD admin groups
+- [ ] Set API server authorized IP ranges (if needed)
+- [ ] Review and adjust node pool sizes
+- [ ] Set up cost monitoring and budgets in Azure
+- [ ] Prepare application deployment manifests with node selectors
+- [ ] Configure monitoring alerts
+- [ ] Document incident response procedures
+- [ ] Test autoscaling behavior
+- [ ] Perform load testing in non-production
+- [ ] Plan backup and disaster recovery strategy
+- [ ] Schedule regular security reviews
+- [ ] Set up log aggregation and retention policy
+
+## 🎯 Quick Links
+
+- **Repository Structure**: [Module Organization](docs/MODULE-STRUCTURE.md)
+- **CI/CD Setup**: [GitHub Actions Guide](docs/GITHUB-ACTIONS-SETUP.md)
+- **Node Pools**: [Architecture Details](docs/FRONTEND-BACKEND-ARCHITECTURE.md)
+- **Commands**: [Quick Reference](docs/QUICK-REFERENCE.md)
+- **Help**: [Troubleshooting](docs/TROUBLESHOOTING.md)
