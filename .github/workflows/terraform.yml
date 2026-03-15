@@ -1,0 +1,218 @@
+name: Terraform AKS Deployment
+
+on:
+  push:
+    branches:
+      - main
+      - development
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  # Azure Terraform Variables
+  TF_VAR_resource_group_name: ${{ vars.RESOURCE_GROUP_NAME }}
+  TF_VAR_cluster_name: ${{ vars.CLUSTER_NAME }}
+  TF_VAR_location: ${{ vars.LOCATION }}
+  ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+
+jobs:
+  terraform-plan:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+        working-directory: ./
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.BACKEND_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.BACKEND_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.BACKEND_CONTAINER_NAME }}" \
+            -backend-config="key=${{ github.ref_name }}.tfstate" \
+            -backend-config="access_key=${{ secrets.BACKEND_STORAGE_ACCESS_KEY }}"
+        working-directory: ./
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ./
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -var-file=environments/${{ github.ref_name }}.tfvars \
+            -out=tfplan-${{ github.ref_name }}
+        working-directory: ./
+
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ github.ref_name }}
+          path: ./tfplan-${{ github.ref_name }}
+          retention-days: 5
+
+      - name: Comment PR with Plan
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `#### Terraform Plan 📋
+            
+            **Environment:** \`${{ github.ref_name }}\`
+            
+            The plan has been generated successfully. Review the changes and approve to apply.`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+  # Manual approval for terraform apply
+  approve-terraform-apply:
+    needs: terraform-plan
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Manual Intervention
+        uses: trstringer/manual-approval@v1
+        with:
+          secret: ${{ secrets.GITHUB_TOKEN }}
+          approvers: jatinlodhi2002
+          minimum-approvals: 1
+          issue-title: "Terraform Apply Approval - ${{ github.ref_name }}"
+          issue-body: |
+            ## Terraform Apply Approval Required
+            
+            **Branch:** `${{ github.ref_name }}`
+            **Commit:** ${{ github.sha }}
+            **Triggered by:** @${{ github.actor }}
+            
+            ### Summary
+            This workflow will apply Terraform changes to deploy/update the AKS cluster.
+            
+            **Resource Group:** ${{ vars.RESOURCE_GROUP_NAME }}
+            **Cluster Name:** ${{ vars.CLUSTER_NAME }}
+            **Location:** ${{ vars.LOCATION }}
+            
+            ### Action Required
+            Please review the Terraform plan from the previous job and approve or reject this deployment.
+            
+            To **approve**, comment: `approve` or `yes`
+            To **reject**, comment: `deny` or `no`
+            
+            ---
+            ⚠️ **Warning:** This will modify Azure resources. Please ensure you have reviewed the plan carefully.
+
+  # Terraform apply
+  terraform-apply:
+    needs: approve-terraform-apply
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.BACKEND_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.BACKEND_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.BACKEND_CONTAINER_NAME }}" \
+            -backend-config="key=${{ github.ref_name }}.tfstate" \
+            -backend-config="access_key=${{ secrets.BACKEND_STORAGE_ACCESS_KEY }}"
+        working-directory: ./
+
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ github.ref_name }}
+          path: ./
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan-${{ github.ref_name }}
+        working-directory: ./
+
+      - name: Get AKS Credentials
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ vars.RESOURCE_GROUP_NAME }} \
+            --name ${{ vars.CLUSTER_NAME }} \
+            --overwrite-existing
+
+      - name: Verify AKS Deployment
+        run: |
+          echo "Checking AKS cluster status..."
+          kubectl get nodes
+          kubectl get namespaces
+          echo "Deployment successful!"
+
+      - name: Comment PR with Success
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `#### Terraform Apply ✅
+            
+            **Environment:** \`${{ github.ref_name }}\`
+            
+            The infrastructure has been successfully deployed!`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+      - name: Post deployment summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Resource Group:** ${{ vars.RESOURCE_GROUP_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Cluster Name:** ${{ vars.CLUSTER_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Location:** ${{ vars.LOCATION }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ AKS cluster deployed successfully!" >> $GITHUB_STEP_SUMMARY
+
+# END
