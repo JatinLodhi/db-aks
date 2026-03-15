@@ -8,23 +8,45 @@ variable "environment" {
   type        = string
 }
 
-variable "user_node_vm_size" {
-  description = "VM size for user node pools"
+# Frontend Node Pool Configuration
+variable "frontend_node_vm_size" {
+  description = "VM size for frontend node pool"
   type        = string
 }
 
-variable "user_node_initial_count" {
-  description = "Initial number of nodes in user pool"
+variable "frontend_node_initial_count" {
+  description = "Initial number of nodes in frontend pool"
   type        = number
 }
 
-variable "user_node_min_count" {
-  description = "Minimum nodes in user pool"
+variable "frontend_node_min_count" {
+  description = "Minimum nodes in frontend pool"
   type        = number
 }
 
-variable "user_node_max_count" {
-  description = "Maximum nodes in user pool"
+variable "frontend_node_max_count" {
+  description = "Maximum nodes in frontend pool"
+  type        = number
+}
+
+# Backend Node Pool Configuration
+variable "backend_node_vm_size" {
+  description = "VM size for backend node pool"
+  type        = string
+}
+
+variable "backend_node_initial_count" {
+  description = "Initial number of nodes in backend pool"
+  type        = number
+}
+
+variable "backend_node_min_count" {
+  description = "Minimum nodes in backend pool"
+  type        = number
+}
+
+variable "backend_node_max_count" {
+  description = "Maximum nodes in backend pool"
   type        = number
 }
 
@@ -41,16 +63,6 @@ variable "aks_subnet_id" {
 variable "availability_zones" {
   description = "Availability zones for node pools"
   type        = list(string)
-}
-
-variable "enable_high_perf_pool" {
-  description = "Enable high-performance node pool for critical workloads"
-  type        = bool
-}
-
-variable "high_perf_node_vm_size" {
-  description = "VM size for high-performance node pool"
-  type        = string
 }
 
 variable "tags" {

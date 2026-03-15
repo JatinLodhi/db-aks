@@ -94,18 +94,20 @@ module "aks_cluster" {
 module "node_pools" {
   source = "./modules/node-pools"
 
-  kubernetes_cluster_id   = module.aks_cluster.cluster_id
-  environment             = var.environment
-  user_node_vm_size       = var.user_node_vm_size
-  user_node_initial_count = var.user_node_initial_count
-  user_node_min_count     = var.user_node_min_count
-  user_node_max_count     = var.user_node_max_count
-  max_pods_per_node       = var.max_pods_per_node
-  aks_subnet_id           = module.networking.aks_subnet_id
-  availability_zones      = var.availability_zones
-  enable_high_perf_pool   = var.enable_high_perf_pool
-  high_perf_node_vm_size  = var.high_perf_node_vm_size
-  tags                    = var.tags
+  kubernetes_cluster_id       = module.aks_cluster.cluster_id
+  environment                 = var.environment
+  frontend_node_vm_size       = var.frontend_node_vm_size
+  frontend_node_initial_count = var.frontend_node_initial_count
+  frontend_node_min_count     = var.frontend_node_min_count
+  frontend_node_max_count     = var.frontend_node_max_count
+  backend_node_vm_size        = var.backend_node_vm_size
+  backend_node_initial_count  = var.backend_node_initial_count
+  backend_node_min_count      = var.backend_node_min_count
+  backend_node_max_count      = var.backend_node_max_count
+  max_pods_per_node           = var.max_pods_per_node
+  aks_subnet_id               = module.networking.aks_subnet_id
+  availability_zones          = var.availability_zones
+  tags                        = var.tags
 }
 
 # Module: Container Registry

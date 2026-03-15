@@ -100,29 +100,24 @@ output "system_node_pool_name" {
   value       = module.aks_cluster.system_node_pool_name
 }
 
-output "user_pool_1_name" {
-  description = "Name of user node pool 1"
-  value       = module.node_pools.user_pool_1_name
+output "frontend_pool_name" {
+  description = "Name of frontend node pool"
+  value       = module.node_pools.frontend_pool_name
 }
 
-output "user_pool_2_name" {
-  description = "Name of user node pool 2"
-  value       = module.node_pools.user_pool_2_name
-}
-
-output "high_perf_pool_name" {
-  description = "Name of high-performance node pool"
-  value       = module.node_pools.high_perf_pool_name
+output "backend_pool_name" {
+  description = "Name of backend node pool"
+  value       = module.node_pools.backend_pool_name
 }
 
 output "total_max_nodes" {
   description = "Maximum total nodes across all pools"
-  value       = var.system_node_max_count + (var.user_node_max_count * 2) + (var.enable_high_perf_pool ? 20 : 0)
+  value       = var.system_node_max_count + var.frontend_node_max_count + var.backend_node_max_count
 }
 
 output "estimated_max_concurrent_users" {
-  description = "Estimated maximum concurrent users (rough calculation)"
-  value       = (var.user_node_max_count * 2 * 500) + (var.enable_high_perf_pool ? 10000 : 0)
+  description = "Estimated maximum concurrent users (rough calculation based on node capacity)"
+  value       = (var.frontend_node_max_count + var.backend_node_max_count) * 500
 }
 
 # Commands for quick access

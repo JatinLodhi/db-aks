@@ -90,48 +90,60 @@ variable "system_node_max_count" {
   default     = 6
 }
 
-# User Node Pool Configuration (for 100k concurrent users)
-# Calculation: Assuming ~500 users per node with proper resource allocation
-# 100k users / 500 = 200 nodes at peak
-# With safety margin: min 50, max 250 nodes per pool
-variable "user_node_vm_size" {
-  description = "VM size for user node pools"
+# Frontend Node Pool Configuration
+variable "frontend_node_vm_size" {
+  description = "VM size for frontend node pool (optimized for serving web traffic)"
   type        = string
-  default     = "Standard_D8s_v5" # 8 vCPUs, 32GB RAM - good for high concurrency
+  default     = "Standard_D4s_v5" # 4 vCPUs, 16GB RAM - suitable for frontend workloads
   # Alternative options:
-  # Standard_D16s_v5 (16 vCPUs, 64GB) for more headroom
-  # Standard_D32s_v5 (32 vCPUs, 128GB) for maximum capacity per node
+  # Standard_D2s_v5 (2 vCPUs, 8GB) for lighter frontend
+  # Standard_D8s_v5 (8 vCPUs, 32GB) for heavier frontend traffic
 }
 
-variable "user_node_initial_count" {
-  description = "Initial number of nodes in user pool"
+variable "frontend_node_initial_count" {
+  description = "Initial number of nodes in frontend pool"
   type        = number
-  default     = 30 # Start with capacity for ~15k concurrent users
+  default     = 3 # Start with 3 nodes for availability
 }
 
-variable "user_node_min_count" {
-  description = "Minimum nodes in user pool"
+variable "frontend_node_min_count" {
+  description = "Minimum nodes in frontend pool"
   type        = number
-  default     = 20 # Maintain baseline for ~10k users
+  default     = 3 # Maintain at least 3 nodes across zones
 }
 
-variable "user_node_max_count" {
-  description = "Maximum nodes in user pool"
+variable "frontend_node_max_count" {
+  description = "Maximum nodes in frontend pool"
   type        = number
-  default     = 150 # Scale up to handle ~75k users per pool (300 total with 2 pools)
+  default     = 20 # Scale up for high traffic
 }
 
-# High Performance Node Pool (optional)
-variable "enable_high_perf_pool" {
-  description = "Enable high-performance node pool for critical workloads"
-  type        = bool
-  default     = true
-}
-
-variable "high_perf_node_vm_size" {
-  description = "VM size for high-performance node pool"
+# Backend Node Pool Configuration
+variable "backend_node_vm_size" {
+  description = "VM size for backend node pool (optimized for API and business logic)"
   type        = string
-  default     = "Standard_D16s_v5" # 16 vCPUs, 64GB RAM
+  default     = "Standard_D4s_v5" # 4 vCPUs, 16GB RAM - good for backend processing
+  # Alternative options:
+  # Standard_D8s_v5 (8 vCPUs, 32GB) for heavier backend load
+  # Standard_D16s_v5 (16 vCPUs, 64GB) for intensive backend processing
+}
+
+variable "backend_node_initial_count" {
+  description = "Initial number of nodes in backend pool"
+  type        = number
+  default     = 3 # Start with 3 nodes for availability
+}
+
+variable "backend_node_min_count" {
+  description = "Minimum nodes in backend pool"
+  type        = number
+  default     = 3 # Maintain at least 3 nodes for availability
+}
+
+variable "backend_node_max_count" {
+  description = "Maximum nodes in backend pool"
+  type        = number
+  default     = 20 # Scale up for high traffic
 }
 
 # Pod Configuration
