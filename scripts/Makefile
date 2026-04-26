@@ -1,228 +1,205 @@
-.PHONY: help init plan apply destroy validate format clean cost-estimate deploy test
+.PHONY: help init plan apply destroy validate format clean deploy \
+        workspace-dev workspace-uat workspace-prod workspace-show \
+        get-credentials cluster-info nodes pods top-nodes top-pods \
+        events logs-autoscaler hpa-status pdb-status \
+        deploy-nginx deploy-cert-manager deploy-monitoring \
+        acr-login load-test test backup-state outputs \
+        upgrade-check security-scan start-cluster stop-cluster health-check
 
-# Variables
-CLUSTER_NAME := $(shell terraform output -raw cluster_name 2>/dev/null)
+# Derived from Terraform outputs after deploy
+CLUSTER_NAME   := $(shell terraform output -raw cluster_name 2>/dev/null)
 RESOURCE_GROUP := $(shell terraform output -raw resource_group_name 2>/dev/null)
-ACR_NAME := $(shell terraform output -raw acr_name 2>/dev/null)
+ACR_NAME       := $(shell terraform output -raw acr_name 2>/dev/null)
+WORKSPACE      := $(shell terraform workspace show 2>/dev/null || echo "none")
 
-help: ## Show this help message
-	@echo 'Usage: make [target]'
-	@echo ''
-	@echo 'Available targets:'
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+help: ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort \
+	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "  Active workspace: \033[33m$(WORKSPACE)\033[0m"
 
-init: ## Initialize Terraform
-	@echo "Initializing Terraform..."
+# ─── Workspace Management ────────────────────────────────────────────────────
+
+workspace-dev: ## Switch to dev workspace
+	terraform workspace select dev 2>/dev/null || terraform workspace new dev
+	@echo "Active workspace: $$(terraform workspace show)"
+
+workspace-uat: ## Switch to uat workspace
+	terraform workspace select uat 2>/dev/null || terraform workspace new uat
+	@echo "Active workspace: $$(terraform workspace show)"
+
+workspace-prod: ## Switch to prod workspace
+	terraform workspace select prod 2>/dev/null || terraform workspace new prod
+	@echo "Active workspace: $$(terraform workspace show)"
+
+workspace-show: ## Show current workspace
+	@terraform workspace show
+	@echo ""
+	@terraform workspace list
+
+# ─── Terraform Core ──────────────────────────────────────────────────────────
+
+init: ## Initialise Terraform (run once or after provider changes)
+	@echo "Initialising Terraform..."
 	terraform init
 
-validate: ## Validate Terraform configuration
-	@echo "Validating Terraform configuration..."
+validate: ## Validate configuration
 	terraform validate
 
-format: ## Format Terraform files
-	@echo "Formatting Terraform files..."
+format: ## Format all Terraform files in-place
 	terraform fmt -recursive
 
-plan: ## Create Terraform plan
-	@echo "Creating Terraform plan..."
-	terraform plan -out=tfplan
+plan: ## Plan for active workspace (no var-file needed)
+	@echo "Planning for workspace: $(WORKSPACE)"
+	terraform plan -out=tfplan-$(WORKSPACE)
 
-apply: ## Apply Terraform changes
-	@echo "Applying Terraform changes..."
-	@read -p "Are you sure you want to apply changes? [y/N] " -n 1 -r; \
-	echo; \
+apply: ## Apply saved plan for active workspace
+	@echo "Applying plan for workspace: $(WORKSPACE)"
+	@read -p "Apply changes to [$(WORKSPACE)]? [y/N] " -n 1 -r; echo; \
 	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
-		terraform apply tfplan; \
+		terraform apply tfplan-$(WORKSPACE); \
 	else \
-		echo "Apply cancelled."; \
+		echo "Cancelled."; \
 	fi
 
-destroy: ## Destroy all resources (DANGEROUS!)
-	@echo "WARNING: This will destroy all resources!"
-	@read -p "Type 'yes' to confirm destruction: " confirm; \
-	if [ "$$confirm" = "yes" ]; then \
+destroy: ## Destroy all resources in active workspace (DANGEROUS)
+	@echo "WARNING: This will destroy all resources in workspace [$(WORKSPACE)]!"
+	@read -p "Type the workspace name to confirm: " confirm; \
+	if [ "$$confirm" = "$(WORKSPACE)" ]; then \
 		terraform destroy; \
 	else \
-		echo "Destroy cancelled."; \
+		echo "Cancelled."; \
 	fi
 
-clean: ## Clean up temporary files
-	@echo "Cleaning up temporary files..."
-	rm -f tfplan
-	rm -f *.tfstate*
+deploy: init validate plan apply get-credentials ## Full deployment for active workspace
+	@echo "Deployment complete for workspace: $(WORKSPACE)"
+
+clean: ## Remove local plan files and .terraform cache
+	rm -f tfplan-*
 	rm -f crash.log
 	rm -rf .terraform/
 
-cost-estimate: ## Estimate infrastructure costs
-	@echo "Running cost estimation..."
-	./cost-calculator.sh
+outputs: ## Show Terraform outputs for active workspace
+	terraform output
 
-deploy: init validate plan apply get-credentials ## Full deployment workflow
-	@echo "Deployment complete!"
+# ─── Cluster Access ──────────────────────────────────────────────────────────
 
-get-credentials: ## Get AKS credentials
-	@echo "Getting AKS credentials..."
+get-credentials: ## Fetch kubeconfig for the active workspace cluster
 	@if [ -z "$(CLUSTER_NAME)" ] || [ -z "$(RESOURCE_GROUP)" ]; then \
-		echo "Error: Cluster not deployed yet"; \
-		exit 1; \
+		echo "Error: cluster not deployed yet (no outputs)"; exit 1; \
 	fi
 	az aks get-credentials --resource-group $(RESOURCE_GROUP) --name $(CLUSTER_NAME) --overwrite-existing
 
-cluster-info: ## Show cluster information
-	@echo "Cluster Information:"
-	@echo "  Name: $(CLUSTER_NAME)"
-	@echo "  Resource Group: $(RESOURCE_GROUP)"
-	@echo "  ACR: $(ACR_NAME)"
-	@echo ""
+# ─── Cluster Inspection ──────────────────────────────────────────────────────
+
+cluster-info: ## Show cluster info
+	@echo "Workspace:      $(WORKSPACE)"
+	@echo "Cluster:        $(CLUSTER_NAME)"
+	@echo "Resource Group: $(RESOURCE_GROUP)"
+	@echo "ACR:            $(ACR_NAME)"
 	@kubectl cluster-info 2>/dev/null || echo "Not connected to cluster"
 
-nodes: ## Show cluster nodes
+nodes: ## List nodes with details
+	kubectl get nodes -o wide
+
+pods: ## List all pods across all namespaces
+	kubectl get pods -A -o wide
+
+top-nodes: ## Node resource usage
+	kubectl top nodes
+
+top-pods: ## Pod resource usage
+	kubectl top pods -A
+
+events: ## Recent cluster events (last 50)
+	kubectl get events -A --sort-by='.lastTimestamp' | tail -n 50
+
+logs-autoscaler: ## Cluster autoscaler logs
+	kubectl logs -n kube-system -l app=cluster-autoscaler --tail=100
+
+hpa-status: ## HPA status
+	kubectl get hpa -A
+
+pdb-status: ## Pod Disruption Budget status
+	kubectl get pdb -A
+
+health-check: ## Comprehensive node/pod/event health check
+	@echo "=== Cluster Health Check (workspace: $(WORKSPACE)) ==="
 	@kubectl get nodes -o wide
+	@echo ""
+	@echo "--- Failed Pods ---"
+	@kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded \
+	  | grep -v "Completed" || echo "None"
+	@echo ""
+	@echo "--- Node Resource Usage ---"
+	@kubectl top nodes 2>/dev/null || echo "Metrics server not available"
+	@echo ""
+	@echo "--- Recent Events (last 20) ---"
+	@kubectl get events -A --sort-by='.lastTimestamp' | tail -n 20
 
-pods: ## Show all pods
-	@kubectl get pods -A -o wide
+# ─── Scaling ─────────────────────────────────────────────────────────────────
 
-top-nodes: ## Show node resource usage
-	@kubectl top nodes
-
-top-pods: ## Show pod resource usage
-	@kubectl top pods -A
-
-scale-nodes: ## Manually scale node pool
-	@echo "Current node pools:"
+scale-nodes: ## Manually scale a node pool
 	@az aks nodepool list --resource-group $(RESOURCE_GROUP) --cluster-name $(CLUSTER_NAME) -o table
-	@read -p "Enter node pool name: " pool; \
-	read -p "Enter desired node count: " count; \
-	az aks nodepool scale --resource-group $(RESOURCE_GROUP) --cluster-name $(CLUSTER_NAME) --name $$pool --node-count $$count
+	@read -p "Node pool name: " pool; \
+	read -p "Desired node count: " count; \
+	az aks nodepool scale --resource-group $(RESOURCE_GROUP) \
+	  --cluster-name $(CLUSTER_NAME) --name $$pool --node-count $$count
 
-events: ## Show cluster events
-	@kubectl get events -A --sort-by='.lastTimestamp' | tail -n 50
+# ─── Add-ons ─────────────────────────────────────────────────────────────────
 
-logs-autoscaler: ## Show cluster autoscaler logs
-	@kubectl logs -n kube-system -l app=cluster-autoscaler --tail=100
-
-hpa-status: ## Show HPA status
-	@kubectl get hpa -A
-
-pdb-status: ## Show Pod Disruption Budget status
-	@kubectl get pdb -A
-
-deploy-nginx: ## Deploy NGINX Ingress Controller
-	@echo "Installing NGINX Ingress Controller..."
+deploy-nginx: ## Install NGINX Ingress Controller via Helm
 	helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
 	helm repo update
-	helm install ingress-nginx ingress-nginx/ingress-nginx \
+	helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
 		--namespace ingress-nginx \
 		--create-namespace \
 		--set controller.replicaCount=3 \
 		--set controller.resources.requests.cpu=100m \
 		--set controller.resources.requests.memory=128Mi
 
-deploy-cert-manager: ## Deploy cert-manager
-	@echo "Installing cert-manager..."
+deploy-cert-manager: ## Install cert-manager
 	kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.0/cert-manager.yaml
 
-deploy-monitoring: ## Deploy Prometheus + Grafana
-	@echo "Installing Prometheus and Grafana..."
+deploy-monitoring: ## Install Prometheus + Grafana via Helm
 	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 	helm repo update
-	helm install prometheus prometheus-community/kube-prometheus-stack \
+	helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
 		--namespace monitoring \
 		--create-namespace \
 		--set prometheus.prometheusSpec.retention=30d
 
-acr-login: ## Login to Azure Container Registry
-	@if [ -z "$(ACR_NAME)" ]; then \
-		echo "Error: ACR not deployed"; \
-		exit 1; \
-	fi
+# ─── ACR ─────────────────────────────────────────────────────────────────────
+
+acr-login: ## Login to ACR for the active workspace
+	@if [ -z "$(ACR_NAME)" ]; then echo "Error: ACR not deployed"; exit 1; fi
 	az acr login --name $(ACR_NAME)
 
-load-test: ## Run load test
-	@echo "Running load test..."
-	@if [ ! -f "load-test.js" ]; then \
-		echo "Error: load-test.js not found"; \
-		exit 1; \
-	fi
-	@read -p "Enter target URL (e.g., https://your-app.com): " url; \
-	BASE_URL=$$url k6 run load-test.js
+# ─── Maintenance ─────────────────────────────────────────────────────────────
 
-test: ## Run basic cluster tests
-	@echo "Running cluster tests..."
-	@echo "Testing API server connectivity..."
-	@kubectl cluster-info
-	@echo ""
-	@echo "Checking node health..."
-	@kubectl get nodes
-	@echo ""
-	@echo "Checking system pods..."
-	@kubectl get pods -n kube-system
-	@echo ""
-	@echo "Checking pod disruption budgets..."
-	@kubectl get pdb -A
-
-backup-state: ## Backup Terraform state
-	@echo "Backing up Terraform state..."
-	@mkdir -p backups
-	terraform state pull > backups/terraform.tfstate.$(shell date +%Y%m%d-%H%M%S).backup
+backup-state: ## Backup Terraform state for active workspace
+	mkdir -p backups
+	terraform state pull > backups/$(WORKSPACE)-$(shell date +%Y%m%d-%H%M%S).tfstate
 	@echo "State backed up to backups/"
 
-show-costs: ## Show estimated monthly costs
-	@echo "Estimated Infrastructure Costs:"
-	@echo ""
-	@./cost-calculator.sh
+upgrade-check: ## Check available Kubernetes version upgrades
+	az aks get-upgrades --resource-group $(RESOURCE_GROUP) --name $(CLUSTER_NAME) -o table
 
-outputs: ## Show Terraform outputs
-	@terraform output
+security-scan: ## Run Checkov + TFSec scans
+	@checkov -d .. --framework terraform || echo "Install: pip install checkov"
+	@tfsec .. || echo "Install: https://github.com/aquasecurity/tfsec"
 
-dashboard: ## Open Kubernetes Dashboard
-	@echo "Starting kubectl proxy..."
-	@echo "Dashboard will be available at:"
-	@echo "http://localhost:8001/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:/proxy/"
-	kubectl proxy
-
-upgrade-check: ## Check for available AKS upgrades
-	@echo "Checking for available Kubernetes upgrades..."
-	@az aks get-upgrades --resource-group $(RESOURCE_GROUP) --name $(CLUSTER_NAME) -o table
-
-security-scan: ## Run security scans
-	@echo "Running Checkov security scan..."
-	@checkov -d . --framework terraform || echo "Checkov not installed: pip install checkov"
-	@echo ""
-	@echo "Running TFSec security scan..."
-	@tfsec . || echo "TFSec not installed: https://github.com/aquasecurity/tfsec"
-
-start-cluster: ## Start stopped AKS cluster
-	@echo "Starting AKS cluster..."
+start-cluster: ## Start a stopped AKS cluster
 	az aks start --resource-group $(RESOURCE_GROUP) --name $(CLUSTER_NAME)
 
-stop-cluster: ## Stop AKS cluster to save costs
-	@echo "WARNING: This will stop the cluster and lose some configurations!"
-	@read -p "Type 'yes' to confirm: " confirm; \
-	if [ "$$confirm" = "yes" ]; then \
+stop-cluster: ## Stop AKS cluster to save cost
+	@read -p "Stop cluster [$(CLUSTER_NAME)] in workspace [$(WORKSPACE)]? Type 'yes': " c; \
+	if [ "$$c" = "yes" ]; then \
 		az aks stop --resource-group $(RESOURCE_GROUP) --name $(CLUSTER_NAME); \
 	fi
 
-quick-deploy: ## Quick deployment for testing (skips confirmations)
-	@echo "Running quick deployment..."
-	terraform init
-	terraform plan -out=tfplan
-	terraform apply -auto-approve tfplan
-	@echo "Getting cluster credentials..."
-	az aks get-credentials --resource-group $(shell terraform output -raw resource_group_name) --name $(shell terraform output -raw cluster_name)
-	@echo "Quick deployment complete!"
-
-health-check: ## Comprehensive health check
-	@echo "=== Cluster Health Check ==="
-	@echo ""
-	@echo "Nodes Status:"
-	@kubectl get nodes -o wide
-	@echo ""
-	@echo "Failed Pods:"
-	@kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded | grep -v "Completed" || echo "None"
-	@echo ""
-	@echo "Node Resource Usage:"
-	@kubectl top nodes 2>/dev/null || echo "Metrics server not available"
-	@echo ""
-	@echo "Recent Events (last 20):"
-	@kubectl get events -A --sort-by='.lastTimestamp' | tail -n 20
+test: ## Basic cluster connectivity tests
+	kubectl cluster-info
+	kubectl get nodes
+	kubectl get pods -n kube-system
+	kubectl get pdb -A

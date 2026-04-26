@@ -3,18 +3,27 @@ name: Terraform AKS Deployment
 on:
   push:
     branches:
-      - main
-      - development
+      - main   # → prod workspace
+      - uat    # → uat workspace
+      - dev    # → dev workspace
   pull_request:
     branches:
       - main
+      - uat
+      - dev
   workflow_dispatch:
+    inputs:
+      workspace:
+        description: 'Terraform workspace to target'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - uat
+          - prod
 
 env:
-  # Azure Terraform Variables
-  TF_VAR_resource_group_name: ${{ vars.RESOURCE_GROUP_NAME }}
-  TF_VAR_cluster_name: ${{ vars.CLUSTER_NAME }}
-  TF_VAR_location: ${{ vars.LOCATION }}
   ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
   ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
   ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
@@ -23,11 +32,24 @@ env:
 jobs:
   terraform-plan:
     runs-on: ubuntu-latest
-    environment: ${{ github.ref_name }}
-    
+    environment: ${{ github.ref_name == 'main' && 'prod' || github.ref_name }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Resolve workspace name
+        id: workspace
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            WS="${{ github.event.inputs.workspace }}"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            WS="prod"
+          else
+            WS="${{ github.ref_name }}"
+          fi
+          echo "name=$WS" >> $GITHUB_OUTPUT
+          echo "Targeting workspace: $WS"
 
       - name: Azure Login
         uses: azure/login@v2
@@ -37,12 +59,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.7.0
-
-      - name: Terraform Format Check
-        run: terraform fmt -check -recursive
-        continue-on-error: true
-        working-directory: ./
+          terraform_version: 1.10.0
 
       - name: Terraform Init
         run: |
@@ -50,26 +67,27 @@ jobs:
             -backend-config="resource_group_name=${{ vars.BACKEND_RESOURCE_GROUP }}" \
             -backend-config="storage_account_name=${{ vars.BACKEND_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=${{ vars.BACKEND_CONTAINER_NAME }}" \
-            -backend-config="key=${{ github.ref_name }}.tfstate" \
             -backend-config="access_key=${{ secrets.BACKEND_STORAGE_ACCESS_KEY }}"
-        working-directory: ./
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      - name: Select Terraform Workspace
+        run: |
+          terraform workspace select ${{ steps.workspace.outputs.name }} 2>/dev/null \
+            || terraform workspace new ${{ steps.workspace.outputs.name }}
 
       - name: Terraform Validate
         run: terraform validate
-        working-directory: ./
 
       - name: Terraform Plan
-        run: |
-          terraform plan \
-            -var-file=environments/${{ github.ref_name }}.tfvars \
-            -out=tfplan-${{ github.ref_name }}
-        working-directory: ./
+        run: terraform plan -out=tfplan-${{ steps.workspace.outputs.name }}
 
       - name: Upload Terraform Plan
         uses: actions/upload-artifact@v4
         with:
-          name: tfplan-${{ github.ref_name }}
-          path: ./tfplan-${{ github.ref_name }}
+          name: tfplan-${{ steps.workspace.outputs.name }}
+          path: ./tfplan-${{ steps.workspace.outputs.name }}
           retention-days: 5
 
       - name: Comment PR with Plan
@@ -78,66 +96,70 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const output = `#### Terraform Plan 📋
-            
-            **Environment:** \`${{ github.ref_name }}\`
-            
-            The plan has been generated successfully. Review the changes and approve to apply.`;
-            
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: output
+              body: `#### Terraform Plan 📋\n\n**Workspace:** \`${{ steps.workspace.outputs.name }}\`\n\nPlan generated. Review and approve to apply.`
             });
 
-  # Manual approval for terraform apply
   approve-terraform-apply:
     needs: terraform-plan
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development'
-    
+    if: github.event_name != 'pull_request'
+
     steps:
+      - name: Resolve workspace name
+        id: workspace
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ github.event.inputs.workspace }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            echo "name=prod" >> $GITHUB_OUTPUT
+          else
+            echo "name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Manual Intervention
+      - name: Manual Approval Gate
         uses: trstringer/manual-approval@v1
         with:
           secret: ${{ secrets.GITHUB_TOKEN }}
           approvers: jatinlodhi2002
           minimum-approvals: 1
-          issue-title: "Terraform Apply Approval - ${{ github.ref_name }}"
+          issue-title: "Terraform Apply — workspace: ${{ steps.workspace.outputs.name }}"
           issue-body: |
             ## Terraform Apply Approval Required
-            
+
+            **Workspace:** `${{ steps.workspace.outputs.name }}`
             **Branch:** `${{ github.ref_name }}`
             **Commit:** ${{ github.sha }}
             **Triggered by:** @${{ github.actor }}
-            
-            ### Summary
-            This workflow will apply Terraform changes to deploy/update the AKS cluster.
-            
-            **Resource Group:** ${{ vars.RESOURCE_GROUP_NAME }}
-            **Cluster Name:** ${{ vars.CLUSTER_NAME }}
-            **Location:** ${{ vars.LOCATION }}
-            
-            ### Action Required
-            Please review the Terraform plan from the previous job and approve or reject this deployment.
-            
-            To **approve**, comment: `approve` or `yes`
-            To **reject**, comment: `deny` or `no`
-            
-            ---
-            ⚠️ **Warning:** This will modify Azure resources. Please ensure you have reviewed the plan carefully.
 
-  # Terraform apply
+            Resource Group: `aks-${{ steps.workspace.outputs.name }}-rg`
+            Cluster: `aks-${{ steps.workspace.outputs.name }}-cluster`
+
+            Comment `approve` to proceed or `deny` to cancel.
+
   terraform-apply:
     needs: approve-terraform-apply
     runs-on: ubuntu-latest
-    environment: ${{ github.ref_name }}
+    environment: ${{ github.ref_name == 'main' && 'prod' || github.ref_name }}
 
     steps:
+      - name: Resolve workspace name
+        id: workspace
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ github.event.inputs.workspace }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            echo "name=prod" >> $GITHUB_OUTPUT
+          else
+            echo "name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -149,7 +171,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.7.0
+          terraform_version: 1.10.0
 
       - name: Terraform Init
         run: |
@@ -157,62 +179,38 @@ jobs:
             -backend-config="resource_group_name=${{ vars.BACKEND_RESOURCE_GROUP }}" \
             -backend-config="storage_account_name=${{ vars.BACKEND_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=${{ vars.BACKEND_CONTAINER_NAME }}" \
-            -backend-config="key=${{ github.ref_name }}.tfstate" \
             -backend-config="access_key=${{ secrets.BACKEND_STORAGE_ACCESS_KEY }}"
-        working-directory: ./
+
+      - name: Select Terraform Workspace
+        run: |
+          terraform workspace select ${{ steps.workspace.outputs.name }} 2>/dev/null \
+            || terraform workspace new ${{ steps.workspace.outputs.name }}
 
       - name: Download Terraform Plan
         uses: actions/download-artifact@v4
         with:
-          name: tfplan-${{ github.ref_name }}
+          name: tfplan-${{ steps.workspace.outputs.name }}
           path: ./
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan-${{ github.ref_name }}
-        working-directory: ./
+        run: terraform apply -auto-approve tfplan-${{ steps.workspace.outputs.name }}
 
       - name: Get AKS Credentials
         run: |
           az aks get-credentials \
-            --resource-group ${{ vars.RESOURCE_GROUP_NAME }} \
-            --name ${{ vars.CLUSTER_NAME }} \
+            --resource-group aks-${{ steps.workspace.outputs.name }}-rg \
+            --name aks-${{ steps.workspace.outputs.name }}-cluster \
             --overwrite-existing
 
       - name: Verify AKS Deployment
         run: |
-          echo "Checking AKS cluster status..."
           kubectl get nodes
           kubectl get namespaces
-          echo "Deployment successful!"
-
-      - name: Comment PR with Success
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const output = `#### Terraform Apply ✅
-            
-            **Environment:** \`${{ github.ref_name }}\`
-            
-            The infrastructure has been successfully deployed!`;
-            
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: output
-            });
 
       - name: Post deployment summary
         run: |
           echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Environment:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Resource Group:** ${{ vars.RESOURCE_GROUP_NAME }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Cluster Name:** ${{ vars.CLUSTER_NAME }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Location:** ${{ vars.LOCATION }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Workspace:** ${{ steps.workspace.outputs.name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Resource Group:** aks-${{ steps.workspace.outputs.name }}-rg" >> $GITHUB_STEP_SUMMARY
+          echo "**Cluster:** aks-${{ steps.workspace.outputs.name }}-cluster" >> $GITHUB_STEP_SUMMARY
           echo "✅ AKS cluster deployed successfully!" >> $GITHUB_STEP_SUMMARY
-
-# END

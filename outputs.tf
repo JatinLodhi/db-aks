@@ -1,3 +1,8 @@
+output "workspace" {
+  description = "Active Terraform workspace"
+  value       = terraform.workspace
+}
+
 output "resource_group_name" {
   description = "Name of the resource group"
   value       = module.resource_group.name
@@ -111,16 +116,16 @@ output "backend_pool_name" {
 }
 
 output "total_max_nodes" {
-  description = "Maximum total nodes across all pools"
-  value       = var.system_node_max_count + var.frontend_node_max_count + var.backend_node_max_count
+  description = "Maximum total nodes across all pools for the active workspace"
+  value       = local.config.system_node_max_count + local.config.frontend_node_max_count + local.config.backend_node_max_count
 }
 
 output "estimated_max_concurrent_users" {
-  description = "Estimated maximum concurrent users (rough calculation based on node capacity)"
-  value       = (var.frontend_node_max_count + var.backend_node_max_count) * 500
+  description = "Estimated maximum concurrent users based on node capacity"
+  value       = (local.config.frontend_node_max_count + local.config.backend_node_max_count) * 500
 }
 
-# Commands for quick access
+# Convenience commands
 output "get_credentials_command" {
   description = "Command to get AKS credentials"
   value       = "az aks get-credentials --resource-group ${module.resource_group.name} --name ${module.aks_cluster.cluster_name}"
@@ -128,5 +133,5 @@ output "get_credentials_command" {
 
 output "connect_to_acr_command" {
   description = "Command to login to ACR"
-  value       = var.create_acr ? "az acr login --name ${module.container_registry.acr_name}" : null
+  value       = local.config.create_acr ? "az acr login --name ${module.container_registry.acr_name}" : null
 }
